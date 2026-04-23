@@ -1,0 +1,8 @@
+{
+  "name": "ching-api-integration",
+  "description": "Teaches Claude how to integrate the CHING payments API into a SaaS product. Covers checkout sessions, setup sessions, subscriptions, webhooks, billing portal, and the two golden rules for card handling.",
+  "version": "0.1.0",
+  "author": {
+    "name": "CHING"
+  }
+}
