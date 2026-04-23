@@ -1,5 +1,5 @@
 ---
-name: ching-api-integration
+name: ching-integration
 description: Use when integrating the CHING payments API into a SaaS product, including subscriptions, checkout sessions, saved payment methods, webhooks, refunds, or customer billing portal. Covers ILS billing, agorot amounts, and the two golden rules around checkout/setup sessions.
 ---
 
@@ -37,7 +37,7 @@ Violations of either rule = broken integration. If you find yourself about to bu
 
 ## Base URL & Authentication
 
-- **Base URL:** `https://api.ching.co.il/v1`
+- **Base URL:** `https://api.ching.co.il/ching/v1`
 - **Auth header:** `Authorization: Bearer <API_KEY>`
 - **Test keys:** `ck_test_*` (never charge real money)
 - **Live keys:** `ck_live_*` (real charges; must be activated in dashboard)
@@ -69,7 +69,7 @@ Test and live data are strictly isolated. A test-mode customer cannot be used wi
 ### 1. Sign the customer up on your SaaS and mirror them in CHING
 
 ```bash
-POST https://api.ching.co.il/v1/customers
+POST https://api.ching.co.il/ching/v1/customers
 Authorization: Bearer ck_test_...
 Content-Type: application/json
 
@@ -261,7 +261,7 @@ import express from 'express'
 import crypto from 'crypto'
 import fetch from 'node-fetch'
 
-const CHING = 'https://api.ching.co.il/v1'
+const CHING = 'https://api.ching.co.il/ching/v1'
 const KEY = process.env.CHING_API_KEY           // ck_test_... or ck_live_...
 const WH_SECRET = process.env.CHING_WEBHOOK_SECRET
 

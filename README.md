@@ -18,22 +18,34 @@ The skill expands on both rules with complete request/response examples and expl
 
 ## Install
 
-### Option 1: Persistent install via settings
+In Claude Code, run:
 
-Add the absolute path to `~/.claude/settings.json`:
+```
+/plugin marketplace add ching-payments/claude-plugin
+/plugin install ching-api-integration@ching-payments
+```
+
+The first command adds this repo as a marketplace; the second installs the skill. Once installed, Claude automatically picks up the skill whenever it sees CHING-related tasks.
+
+### Updating
+
+When a new version ships:
+
+```
+/plugin marketplace update ching-payments
+/plugin install ching-api-integration@ching-payments
+```
+
+Or enable auto-update from the `/plugin` UI under **Marketplaces**.
+
+### Local development
+
+If you're hacking on the plugin locally, point your Claude Code settings at the checkout:
 
 ```json
 {
   "plugins": ["/absolute/path/to/ching-claude-plugin"]
 }
-```
-
-Reload with `/reload-plugins`. The skill is then available as `ching-api-integration:ching-api-integration`.
-
-### Option 2: One-off local run
-
-```bash
-claude --plugin-dir /absolute/path/to/ching-claude-plugin
 ```
 
 ## When Claude uses this skill

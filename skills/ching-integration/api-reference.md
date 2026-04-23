@@ -1,6 +1,6 @@
 # CHING API Reference
 
-Complete endpoint catalog. Base URL: `https://api.ching.co.il/v1`. All endpoints require `Authorization: Bearer <API_KEY>` unless noted.
+Complete endpoint catalog. Base URL: `https://api.ching.co.il/ching/v1`. All endpoints require `Authorization: Bearer <API_KEY>` unless noted.
 
 **Reminders:**
 - Amounts are integer **agorot** (100 = 1.00 ILS).
