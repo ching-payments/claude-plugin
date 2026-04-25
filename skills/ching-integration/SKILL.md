@@ -1,346 +1,361 @@
 ---
 name: ching-integration
-description: Use when integrating the CHING payments API into a SaaS product, including subscriptions, checkout sessions, saved payment methods, webhooks, refunds, or customer billing portal. Covers ILS billing, agorot amounts, and the two golden rules around checkout/setup sessions.
+description: Use when integrating CHING into a SaaS product - pulling products and prices, redirecting users to the hosted setup / checkout / portal pages, managing customers and cards, canceling subscriptions, and receiving webhooks.
 ---
 
 # CHING API Integration
 
-CHING is a payments API for the Israeli market, built ILS-native with support for subscriptions, one-time charges, Israeli tax documents, and installments. This skill teaches how to integrate it into a SaaS product so customers can pay, subscribe, manage cards, and self-serve billing.
+CHING is an ILS-native payments API with hosted pages for card collection, checkout, and the customer portal. This skill covers the six operations a SaaS integration needs.
 
-## Two Golden Rules (NON-NEGOTIABLE)
+## Basics
 
-These two rules override any creative implementation. Always follow them:
+- **API base URL:** `https://api.ching.co.il/ching/v1`
+- **Hosted pages** (checkout, setup, portal): `https://secured.ching.co.il`. Always follow the `url` returned by the API - never construct these URLs yourself.
+- **Auth header:** `Authorization: Bearer <API_KEY>`. Test keys start with `ck_test_`, live keys with `ck_live_`.
+- **Amounts are integer agorot:** `9900` = 99.00 ILS. Never send decimals.
+- **Response envelope:** `{ success: true, data: ... }` on success, `{ success: false, error: { code, message } }` on failure.
+- **Secret keys never leave the server.** Call the API from your backend; hand the browser only the hosted `url` to redirect to.
 
-1. **When a customer wants to join a plan (subscribe / purchase) -> ALWAYS open a CHING checkout page.**
-   - Do NOT charge the card directly, do NOT collect card data yourself, do NOT build a custom payment form.
-   - The only correct flow: `POST /v1/checkout_sessions` -> redirect the user to the returned `url`.
-   - CHING's hosted checkout handles PCI, 3DS, installments, tax, and receipt.
+---
 
-2. **When a customer wants to add or save a credit card (no charge right now) -> ALWAYS open a CHING setup session.**
-   - Do NOT tokenize the card yourself. Do NOT create an empty charge.
-   - The only correct flow: `POST /v1/setup_sessions` -> redirect to the returned `url`.
-   - After success, the card is attached as a `payment_method` on the customer and can be used for future charges/subscriptions.
+## Customers
 
-Violations of either rule = broken integration. If you find yourself about to build a card form, STOP and use the hosted session instead.
+Most endpoints reference a `customer` (`cus_...`). Create one once per end user, store the id on your user row, reuse it forever - do NOT create a fresh CHING customer on each subscription or each login.
 
-## When to Use Which Endpoint
-
-| Business goal | Correct action |
-|---|---|
-| Customer signs up for a paid plan | Create customer -> create checkout session -> redirect |
-| Customer adds a credit card without charging | Create setup session -> redirect |
-| Charge an already-saved card one time | `POST /v1/charges` with `customer` + `payment_method` |
-| Recurring billing from a saved card | `POST /v1/subscriptions` with `customer` + `payment_method` + `price` |
-| Let the customer manage their subscriptions / cards themselves | Create billing portal session -> redirect |
-| Issue a refund | `POST /v1/refunds` with `charge` + `amount` |
-| React to payment events | Register a webhook endpoint, verify signatures |
-
-## Base URL & Authentication
-
-- **Base URL:** `https://api.ching.co.il/ching/v1`
-- **Auth header:** `Authorization: Bearer <API_KEY>`
-- **Test keys:** `ck_test_*` (never charge real money)
-- **Live keys:** `ck_live_*` (real charges; must be activated in dashboard)
-- **Livemode header (optional):** `X-Livemode: false` to explicitly run in test mode
-
-Test and live data are strictly isolated. A test-mode customer cannot be used with a live-mode charge.
-
-## Amounts, Currency, IDs
-
-- **Currency:** `ils` (ILS is the only supported currency today).
-- **Amounts are in agorot (integer, smallest unit):** `9900` = 99.00 ILS. NEVER send `99.00` or `"99"`.
-- **ID prefixes (human-debuggable):**
-
-| Resource | Prefix | Example |
-|---|---|---|
-| Customer | `cus` | `cus_abc123` |
-| Product | `prod` | `prod_xyz456` |
-| Price | `price` | `price_def789` |
-| Payment Method | `pm` | `pm_ghi012` |
-| Checkout Session | `co` | `co_jkl345` |
-| Setup Session | `seti` | `seti_mno678` |
-| Subscription | `sub` | `sub_pqr901` |
-| Charge | `ch` | `ch_stu234` |
-| Refund | `re` | `re_vwx567` |
-| Event | `evt` | `evt_yza890` |
-
-## The Canonical Integration Flow
-
-### 1. Sign the customer up on your SaaS and mirror them in CHING
+### Create
 
 ```bash
-POST https://api.ching.co.il/ching/v1/customers
-Authorization: Bearer ck_test_...
-Content-Type: application/json
-
+POST /v1/customers
 {
-  "name": "Dana Cohen",
-  "email": "dana@acme.co.il",
-  "phone": "050-123-4567",
-  "metadata": { "your_user_id": "usr_42" }
+  "name":     "Dana Cohen",
+  "email":    "dana@acme.co.il",
+  "phone":    "050-123-4567",
+  "taxId":    "123456789",
+  "locale":   "he",
+  "metadata": { "app_user_id": "usr_42" }
 }
 ```
 
-Store the returned `id` (`cus_...`) in your database alongside your user record. This is the link between your SaaS and CHING.
-
-### 2a. User clicks "Upgrade to Pro" -> checkout session (GOLDEN RULE #1)
-
-```bash
-POST /v1/checkout_sessions
-
-{
-  "customer": "cus_abc123",
-  "price": "price_pro_monthly",
-  "success_url": "https://yoursaas.com/billing/success?sid={CHECKOUT_SESSION_ID}",
-  "cancel_url": "https://yoursaas.com/billing"
-}
+```json
+{ "data": { "id": "cus_xxx", "object": "customer", "name": "...", "email": "...", "phone": "...", "taxId": "...", "metadata": {}, "livemode": false, "created": "..." } }
 ```
 
-Response contains `url`. Redirect the browser to it. CHING hosts checkout, collects the card, and on success redirects to your `success_url`. You do NOT need to fetch the session to confirm - listen to the `checkout_session.completed` webhook instead (or tolerate a round-trip to `GET /v1/checkout_sessions/{id}`).
+Only `name` is required. `phone` accepts Israeli local format (`050-...`) or E.164 (`+972501234567`) and is normalized on save. `taxId` is the Israeli ID / company number, printed on tax documents.
 
-### 2b. User clicks "Add a new card" -> setup session (GOLDEN RULE #2)
+### Retrieve
+
+```bash
+GET /v1/customers/{cus_id}
+```
+
+Returns the same shape as create.
+
+### List
+
+```bash
+GET /v1/customers?limit=25&starting_after=cus_xxx
+```
+
+Cursor pagination. Response includes `has_more: boolean`; pass the last item's `id` as the next `starting_after`.
+
+### Update
+
+```bash
+POST /v1/customers/{cus_id}
+{ "email": "new@acme.co.il" }
+```
+
+All fields optional; unsupplied fields stay unchanged.
+
+### List payment methods
+
+```bash
+GET /v1/customers/{cus_id}/payment_methods
+```
+
+```json
+{ "data": [ { "id": "pm_xxx", "type": "card", "card": { "brand": "visa", "last4": "4242", "exp_month": 12, "exp_year": 2030 }, "is_default": true, "status": "active" } ] }
+```
+
+Use this on your "Payment methods" UI; combine with §4 for detach / set-default actions.
+
+`GET /v1/customers/{cus_id}/payment_methods/inactive` returns previously-detached cards if you need a history view.
+
+---
+
+## 1. Pull products and prices (for a pricing page)
+
+Build your pricing grid from two list calls.
+
+```bash
+GET /v1/products
+Authorization: Bearer <API_KEY>
+```
+
+```json
+{ "data": [ { "id": "prod_xxx", "name": "Pro", "description": "...", "image_url": null, "features": [{"title":"Unlimited","subtitle":"..."}], "active": true, "metadata": {} } ] }
+```
+
+Then per product, fetch active prices:
+
+```bash
+GET /v1/prices?product=prod_xxx&active=true
+```
+
+```json
+{ "data": [ { "id": "price_pro_monthly", "product": "prod_xxx", "unit_amount": 9900, "currency": "ils", "type": "recurring", "recurring": { "interval": "month", "interval_count": 1, "trial_period_days": null } } ] }
+```
+
+Rendering tips:
+- Divide `unit_amount` by 100 for display: `₪99.00`.
+- `type: "recurring"` prices have a populated `recurring` object (month/year interval, optional trial). `type: "one_time"` prices have `recurring: null`.
+- Use the product's `features` array for the plan's bullet list and `metadata` for any custom flags you attached.
+- Filter out products whose `active` is `false` when rendering - inactive products should not be purchasable.
+
+---
+
+## 2. Add a credit card (setup session)
+
+Use this when the user wants to save a card without paying right now (e.g. a "Payment methods" page). ALWAYS use a setup session - never build a card form yourself.
 
 ```bash
 POST /v1/setup_sessions
-
 {
-  "customer": "cus_abc123",
-  "success_url": "https://yoursaas.com/settings/cards?sid={SETUP_SESSION_ID}",
-  "cancel_url": "https://yoursaas.com/settings/cards"
+  "customer": "cus_xxx",
+  "success_url": "https://yoursaas.com/settings/cards?ok=1",
+  "cancel_url":  "https://yoursaas.com/settings/cards"
 }
 ```
 
-Redirect to `url`. After the customer saves the card, a `payment_method` is attached to the customer. Listen to `setup_session.completed` or fetch payment methods when the user returns.
+```json
+{ "data": { "id": "seti_xxx", "url": "https://secured.ching.co.il/setup/seti_xxx", "expires_at": "..." } }
+```
 
-### 3. Charge a saved card (one-time) or create a subscription
+Redirect the browser to `url`. CHING renders the card-entry page, collects the card, runs 3DS when needed, and on success redirects the user back to `success_url`. A new `pm_*` (payment method) is attached to the customer and becomes immediately usable.
 
-One-off charge (e.g. top-up, overage):
+After the user returns, the saved card is visible via `GET /v1/customers/{id}/payment_methods`.
+
+---
+
+## 3. Subscribe a user to a plan (checkout session)
+
+Use this for every paid-plan signup. ALWAYS use a checkout session - it handles card collection, 3DS, installments, tax, and receipt in one hosted page.
 
 ```bash
-POST /v1/charges
-
+POST /v1/checkout_sessions
 {
-  "customer": "cus_abc123",
-  "payment_method": "pm_ghi012",
-  "amount": 5000,
-  "description": "Credit pack - 100 credits"
+  "customer": "cus_xxx",
+  "price":    "price_pro_monthly",
+  "success_url": "https://yoursaas.com/billing/success",
+  "cancel_url":  "https://yoursaas.com/pricing"
 }
 ```
 
-Recurring subscription:
+```json
+{ "data": { "id": "co_xxx", "url": "https://secured.ching.co.il/checkout/co_xxx", "expires_at": "..." } }
+```
+
+Redirect to `url`. On success, CHING creates the subscription and charges the first period automatically, then sends the user to `success_url`. The subscription is active by the time the redirect lands.
+
+On your success page, confirm state before provisioning:
 
 ```bash
-POST /v1/subscriptions
+GET /v1/subscriptions?customer=cus_xxx
+```
 
+Look for `status: "active"` or `"trialing"`.
+
+---
+
+## 4. Remove a card / make a card default
+
+Both are simple merchant-side calls - no redirect.
+
+### Detach (remove)
+
+```bash
+POST /v1/payment_methods/{pm_id}/detach
+```
+
+```json
+{ "data": { "id": "pm_xxx", "status": "inactive" } }
+```
+
+The card moves to the inactive list and is no longer chargeable.
+
+### Set as default
+
+```bash
+POST /v1/payment_methods/{pm_id}/set_default
+```
+
+```json
+{ "data": { "id": "pm_xxx", "is_default": true } }
+```
+
+Future charges and subscription renewals use the default card unless a specific `payment_method` is passed on the call.
+
+List a customer's active cards via `GET /v1/customers/{id}/payment_methods`; each entry includes `is_default: boolean` and the card's `brand`, `last4`, `exp_month`, `exp_year`.
+
+---
+
+## 5. Cancel a subscription
+
+```bash
+POST /v1/subscriptions/{sub_id}/cancel
 {
-  "customer": "cus_abc123",
-  "payment_method": "pm_ghi012",
-  "price": "price_pro_monthly"
+  "cancel_at_period_end": false
 }
 ```
 
-Note: you only get to call these directly if the card was saved via a setup session. The normal "subscribe" flow (§ 2a) goes through a checkout session, which creates the subscription for you.
+```json
+{ "data": { "id": "sub_xxx", "status": "canceled", "cancel_at_period_end": false } }
+```
 
-### 4. Let customers self-manage (billing portal)
+Two modes:
+- **`cancel_at_period_end: false`** (or omit) - cancels immediately. `status` becomes `canceled`. No prorated refund.
+- **`cancel_at_period_end: true`** - stays `active` until `current_period_end`, then transitions to `canceled`. The customer keeps access for the remainder of the paid period and is not renewed.
+
+If you want to let the customer self-cancel (including the "cancel at period end" choice), point them at the portal instead - see §6.
+
+---
+
+## 6. Open the customer portal
+
+CHING's hosted self-service UI. The customer can view past invoices, change their default card, save a new card, and cancel subscriptions - without you building any of it.
 
 ```bash
 POST /v1/billing_portal_sessions
-
-{ "customer": "cus_abc123" }
+{
+  "customer":   "cus_xxx",
+  "return_url": "https://yoursaas.com/settings/billing"
+}
 ```
 
-Redirect to the returned `url`. The customer can view invoices, swap default card, cancel/resume subscriptions.
+```json
+{ "data": { "url": "https://secured.ching.co.il/portal/<token>", "expires_at": "..." } }
+```
 
-### 5. Listen to webhooks
+Redirect the user to `url`. When they click "Back to site" (or finish a destructive action), they land on `return_url`.
 
-Always drive business logic (provisioning, emails, feature unlocks) from webhooks, not from the redirect to `success_url`. Redirects can be skipped, lost, or faked; webhooks are authoritative.
+Use this for any customer-driven billing change; only call the API directly (sections 4-5) when YOU want the merchant dashboard to drive the change.
+
+---
+
+## 7. Webhooks
+
+Your server receives asynchronous events from CHING - subscription state changes, charge outcomes, card attachments. Drive internal state (provisioning, emails, feature flags) off these events, NOT off the `success_url` redirect from the hosted pages. Redirects can be lost or faked; webhooks are authoritative and signed.
+
+### Register an endpoint
 
 ```bash
 POST /v1/webhooks
-
 {
-  "url": "https://yoursaas.com/webhooks/ching",
+  "url":    "https://yoursaas.com/webhooks/ching",
   "events": [
-    "checkout_session.completed",
     "setup_session.completed",
     "subscription.created",
     "subscription.updated",
     "subscription.canceled",
     "subscription.past_due",
+    "subscription.trial_will_end",
     "charge.succeeded",
     "charge.failed",
-    "refund.created"
+    "refund.created",
+    "payment_method.attached",
+    "payment_method.detached"
   ]
 }
 ```
 
-Store the returned `secret` (starts with `whsec_`). Verify every incoming webhook:
+```json
+{ "data": { "id": 7, "url": "...", "events": [...], "secret": "whsec_abc..." } }
+```
 
-```js
-const crypto = require('crypto')
+**Store the `secret` securely** - it is shown only on creation and is the HMAC key for signature verification.
 
-function verifyChingWebhook(rawBody, signatureHeader, secret) {
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
-  const a = Buffer.from(expected, 'hex')
-  const b = Buffer.from(signatureHeader, 'hex')
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    throw new Error('Invalid CHING signature')
-  }
+Use `["*"]` to subscribe to every event type.
+
+### Event payload
+
+Every webhook POST has this shape:
+
+```json
+{
+  "id":       "evt_xxx",
+  "type":     "charge.succeeded",
+  "data":     { /* the resource object that triggered the event */ },
+  "livemode": true,
+  "created":  "2026-04-24T12:00:00Z"
 }
 ```
 
-The signature arrives as `Ching-Signature: <hex>`. Read the raw body (NOT the parsed JSON) before signature verification.
+`data` mirrors the object returned from the corresponding `GET` endpoint - e.g. `subscription.created` carries a full subscription object (same fields as `GET /v1/subscriptions/{id}`).
 
-## Full Endpoint Reference
+### Verify the signature
 
-See `api-reference.md` in this skill directory for the complete catalog (request/response fields for every endpoint).
-
-## Webhook Events
-
-| Event | When it fires | Good for |
-|---|---|---|
-| `checkout_session.completed` | Hosted checkout succeeded | Provision access, unlock features |
-| `checkout_session.failed` | Checkout failed | Show retry UI |
-| `setup_session.completed` | Card saved successfully | Mark card setup done in your UI |
-| `setup_session.failed` / `setup_session.expired` | Card not saved | Prompt user to retry |
-| `subscription.created` | New subscription (fires before `charge.succeeded`) | Start provisioning |
-| `subscription.updated` | Plan change, cycle rolled | Sync plan state |
-| `subscription.canceled` | Terminated | Revoke access (respect `cancel_at_period_end`) |
-| `subscription.past_due` | Payment failed, dunning started | Notify user, show banner |
-| `subscription.trial_will_end` | 3 days before trial ends | Remind user to add card |
-| `charge.succeeded` | Payment captured | Fulfill, send receipt |
-| `charge.failed` | Payment declined | Surface failure reason |
-| `refund.created` / `refund.failed` | Refund processed | Update ledger |
-| `payment_method.attached` / `payment_method.detached` | Card added/removed | Sync card list |
-
-## Subscription Lifecycle
-
-Statuses: `active` | `trialing` | `past_due` | `canceled` | `incomplete` | `incomplete_expired`
-
-- `incomplete` -> first charge failed; expires after ~23h if not resolved -> `incomplete_expired`.
-- `past_due` -> CHING retries on days 3, 5, 7; cancels after all retries fail.
-- `trialing` -> no charge until trial ends; listen to `subscription.trial_will_end` to nudge the user.
-- `cancel_at_period_end: true` -> subscription stays `active` until `current_period_end`, then transitions to `canceled`.
-
-Provision access when status is `active` or `trialing`. Revoke when `canceled` (respecting period end) or `incomplete_expired`.
-
-## Common Mistakes
-
-| Mistake | Fix |
-|---|---|
-| Building a card form on your own site | Use checkout session (golden rule 1) or setup session (golden rule 2) |
-| Sending amount as `99` expecting 99 ILS | Amounts are agorot - `99` = 0.99 ILS. Send `9900` for 99 ILS. |
-| Confirming a plan purchase from the `success_url` redirect | Use the `checkout_session.completed` webhook; redirects can be bypassed. |
-| Mixing test and live IDs (e.g. test customer + live price) | Test/live are strictly isolated. Use the matching API key. |
-| Skipping webhook signature verification | Anyone can POST to your endpoint. Always verify `Ching-Signature`. |
-| Parsing JSON before signature verification | Verify against the **raw request body** - re-serialized JSON produces a different signature. |
-| Calling `POST /v1/charges` without a saved `payment_method` | Charges and subscriptions require a pre-attached `pm_*`. Run a setup session first, OR use a checkout session which handles card collection for you. |
-| Trusting an unauthenticated `customer` id from the browser | Always look up the customer from your authenticated session, not from a query param. |
-
-## Red Flags - STOP
-
-If you catch yourself doing any of these, stop and reconsider:
-
-- "I'll just collect the card number with a small form..." -> **NO.** Setup session or checkout session.
-- "I'll hit `/v1/charges` directly for the first subscription payment..." -> **NO.** Checkout session.
-- "The redirect hit our `/success` page, so we're done..." -> **NO.** Wait for the webhook.
-- "I'll compute signature by JSON.stringify'ing the parsed body..." -> **NO.** Verify the raw bytes.
-- "Let me hardcode the amount in dollars..." -> **NO.** Integer agorot, ILS only.
-
-## Testing Locally
-
-- Use the test key (`ck_test_...`).
-- Test mode mocks card processing - any valid-shape card number works (e.g., `4242 4242 4242 4242`).
-- Use a tunneling tool (ngrok, cloudflared) to receive webhooks on `localhost`.
-- Set `X-Livemode: false` on requests to be explicit.
-
-## One-Page Code Example (Node + Express)
+Header: `Ching-Signature: <hex>`. Verify HMAC-SHA256 of the **raw request body** against your webhook secret. The raw bytes matter - re-serializing the JSON changes the hash.
 
 ```js
-import express from 'express'
 import crypto from 'crypto'
-import fetch from 'node-fetch'
-
-const CHING = 'https://api.ching.co.il/ching/v1'
-const KEY = process.env.CHING_API_KEY           // ck_test_... or ck_live_...
-const WH_SECRET = process.env.CHING_WEBHOOK_SECRET
-
-const ching = (path, body) => fetch(`${CHING}${path}`, {
-  method: 'POST',
-  headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
-  body: JSON.stringify(body),
-}).then(r => r.json())
+import express from 'express'
 
 const app = express()
 
-// On your signup handler, mirror the user into CHING.
-async function createChingCustomer(user) {
-  const r = await ching('/customers', {
-    name: user.fullName,
-    email: user.email,
-    metadata: { app_user_id: user.id },
-  })
-  return r.data.id
-}
-
-// Subscribe flow - GOLDEN RULE #1: always use checkout session.
-app.post('/billing/subscribe', async (req, res) => {
-  const { customerId, priceId } = req.body          // from your authenticated session
-  const r = await ching('/checkout_sessions', {
-    customer: customerId,
-    price: priceId,
-    success_url: `${process.env.PUBLIC_URL}/billing/success`,
-    cancel_url: `${process.env.PUBLIC_URL}/billing`,
-  })
-  res.json({ url: r.data.url })                     // client redirects here
-})
-
-// Add card flow - GOLDEN RULE #2: always use setup session.
-app.post('/billing/add-card', async (req, res) => {
-  const { customerId } = req.body
-  const r = await ching('/setup_sessions', {
-    customer: customerId,
-    success_url: `${process.env.PUBLIC_URL}/settings/cards`,
-    cancel_url: `${process.env.PUBLIC_URL}/settings/cards`,
-  })
-  res.json({ url: r.data.url })
-})
-
-// Self-service portal.
-app.post('/billing/portal', async (req, res) => {
-  const { customerId } = req.body
-  const r = await ching('/billing_portal_sessions', { customer: customerId })
-  res.json({ url: r.data.url })
-})
-
-// Webhook handler - use raw body parser for signature verification.
-app.post('/webhooks/ching', express.raw({ type: 'application/json' }), (req, res) => {
-  const sig = req.header('Ching-Signature')
-  const expected = crypto.createHmac('sha256', WH_SECRET).update(req.body).digest('hex')
-  if (!sig || !crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'))) {
-    return res.status(401).end()
+app.post('/webhooks/ching',
+  express.raw({ type: 'application/json' }),  // raw body, not JSON-parsed
+  (req, res) => {
+    const sig = req.header('Ching-Signature')
+    const expected = crypto.createHmac('sha256', WEBHOOK_SECRET).update(req.body).digest('hex')
+    if (!sig ||
+        Buffer.from(expected, 'hex').length !== Buffer.from(sig, 'hex').length ||
+        !crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'))) {
+      return res.status(401).end()
+    }
+    const event = JSON.parse(req.body.toString('utf8'))
+    // ... handle event.type
+    res.json({ received: true })
   }
-  const event = JSON.parse(req.body.toString('utf8'))
-  switch (event.type) {
-    case 'checkout_session.completed':
-      // event.data is the checkout session; provision the user's plan now
-      break
-    case 'subscription.canceled':
-      // revoke features after current_period_end if cancel_at_period_end
-      break
-    case 'charge.succeeded':
-      // store receipt, unlock
-      break
-    // ...handle more events
-  }
-  res.json({ received: true })
-})
+)
 ```
 
-## Summary
+If you don't verify, anyone who knows your endpoint URL can POST fake events.
 
-- Two rules above everything: **checkout session for joining plans, setup session for saving cards.**
-- Amounts in agorot, currency `ils`, IDs prefixed by resource.
-- Webhooks (not redirects) are the source of truth.
-- Always verify `Ching-Signature` against the raw body.
-- Full endpoint catalog in `api-reference.md`.
+### Which events map to which flow
+
+| You did | Listen to | Why |
+|---|---|---|
+| §1 pricing page (no action) | - | no events |
+| §2 setup session completed | `setup_session.completed`, `payment_method.attached` | reflect the new card in your UI |
+| §3 checkout session completed | `subscription.created`, `charge.succeeded` | provision the plan / unlock features |
+| §4 detach card | `payment_method.detached` | sync your local card cache |
+| §5 cancel subscription | `subscription.canceled` (immediate) or `subscription.updated` + later `.canceled` (cancel-at-period-end) | revoke access at the right time |
+| §6 portal activity | the same resource events that the customer's action would have triggered via API (`subscription.canceled`, `payment_method.attached`, etc.) | no portal-specific event - react to the underlying change |
+| automatic renewal | `charge.succeeded` + `subscription.updated` (success) or `charge.failed` + `subscription.past_due` (failure) | keep renewal state fresh |
+
+### Idempotency
+
+CHING retries failed deliveries, so your handler can receive the same `evt_*` more than once. Before acting:
+
+```
+if event_id exists in your webhook_events table → respond 200 and exit
+else insert event_id, then process the event
+```
+
+A simple unique index on `ching_event_id` is enough. Always respond with a 2xx quickly; long-running work should be queued.
+
+### Available event types
+
+- `setup_session.completed` / `.failed` / `.expired`
+- `charge.succeeded` / `.failed`
+- `refund.created` (failed refunds return a synchronous 400; no webhook)
+- `subscription.created` / `.updated` / `.canceled` / `.past_due` / `.trial_will_end`
+- `payment_method.attached` / `.detached`
+
+CHING does NOT emit `checkout_session.*` events - fulfil from the underlying `charge.succeeded` / `subscription.created` instead.
+
+---
+
+## Full endpoint catalog
+
+See `api-reference.md` in this skill directory for complete request/response fields and every endpoint not covered here (customers, charges, refunds, webhooks, products/prices CRUD, etc.).

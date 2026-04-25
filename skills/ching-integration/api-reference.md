@@ -2,6 +2,8 @@
 
 Complete endpoint catalog. Base URL: `https://api.ching.co.il/ching/v1`. All endpoints require `Authorization: Bearer <API_KEY>` unless noted.
 
+**Hosted pages:** checkout sessions, setup sessions, and the customer billing portal are all served from `https://secured.ching.co.il`. The `url` field returned by `POST /checkout_sessions`, `POST /setup_sessions`, and `POST /billing_portal_sessions` already points there - just redirect the customer to it.
+
 **Reminders:**
 - Amounts are integer **agorot** (100 = 1.00 ILS).
 - Currency is `ils` (only option).
@@ -52,7 +54,7 @@ Response:
 }
 ```
 
-Session TTL: 30 minutes. Listen to `checkout_session.completed` (or `.failed`/`.expired`) webhooks.
+Session TTL: 30 minutes. CHING does not emit `checkout_session.*` webhooks; fulfil from the underlying `charge.succeeded` / `subscription.created` events, or poll this session by id.
 
 ### `GET /checkout_sessions/{id}`
 
@@ -336,18 +338,17 @@ Never compute over the re-serialized JSON - use the exact bytes you received.
 
 ### Available event types
 
-- `checkout_session.completed` / `.failed` / `.expired`
 - `setup_session.completed` / `.failed` / `.expired`
-- `customer.created` / `.updated` / `.deleted`
-- `payment_method.attached` / `.detached` / `.updated`
+- `payment_method.attached` / `.detached`
 - `charge.succeeded` / `.failed`
-- `refund.created` / `.failed`
+- `refund.created` (failed refunds return a synchronous 400 and do NOT emit a webhook)
 - `subscription.created` / `.updated` / `.canceled` / `.past_due` / `.trial_will_end`
-- `document.issued`
+
+Not emitted (despite sometimes appearing in older references): `checkout_session.*`, `customer.*`, `payment_method.updated`, `refund.failed`, `document.issued`. For checkout fulfilment, subscribe to `charge.succeeded` / `subscription.created` instead.
 
 ## Billing Portal
 
-Customer-facing self-service. You create a session, the customer gets a URL.
+Customer-facing self-service. You create a session, the customer gets a URL. The portal itself is served from `https://secured.ching.co.il`.
 
 ### `POST /billing_portal_sessions`
 
@@ -355,7 +356,7 @@ Customer-facing self-service. You create a session, the customer gets a URL.
 { "customer": "cus_xxx" }
 ```
 
-Returns `{ url, token, expires_at }`. Redirect the customer to `url`.
+Returns `{ url, token, expires_at }`. The `url` looks like `https://secured.ching.co.il/portal/<token>`. Redirect the customer to it.
 
 ### Customer-scoped portal endpoints (use returned `token`)
 
